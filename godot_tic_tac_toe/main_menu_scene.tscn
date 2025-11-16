@@ -1,0 +1,25 @@
+[gd_scene load_steps=3 format=3 uid="uid://cx0v0mxalt308"]
+
+[sub_resource type="Theme" id="Theme_o4bv6"]
+
+[sub_resource type="SystemFont" id="SystemFont_o4bv6"]
+
+[node name="MainMenuScene" type="Node2D"]
+
+[node name="PlayButton" type="Button" parent="."]
+offset_left = 481.0
+offset_top = 236.0
+offset_right = 581.0
+offset_bottom = 286.0
+theme = SubResource("Theme_o4bv6")
+theme_override_fonts/font = SubResource("SystemFont_o4bv6")
+text = "Play
+"
+
+[node name="LanButton" type="Button" parent="."]
+offset_left = 481.0
+offset_top = 289.0
+offset_right = 581.0
+offset_bottom = 339.0
+text = "LAN
+"
