@@ -3,4 +3,10 @@ name = "rust_tic_tac_toe_game_server"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
+rust_udp_multicast_test = { git = "https://github.com/htoopyaelinn56/rust_udp_multicast_test" }
+godot = { version = "0.2", features = ["experimental-wasm"] }
+
