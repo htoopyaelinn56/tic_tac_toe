@@ -8,5 +8,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rust_udp_multicast_test = { git = "https://github.com/htoopyaelinn56/rust_udp_multicast_test" }
-godot = { version = "0.2", features = ["experimental-wasm"] }
+godot = { version = "0.4.2", features = ["experimental-wasm"] }
+tokio = { version = "1", features = ["full"] }
 
