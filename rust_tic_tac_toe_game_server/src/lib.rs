@@ -1,7 +1,7 @@
 use godot::prelude::*;
 use rust_udp_multicast_test::multicast_service;
 
-use std::sync::OnceLock;
+use std::sync::{mpsc, OnceLock};
 use tokio::runtime::Runtime;
 
 static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -51,10 +51,13 @@ impl RustNode {
     }
 
     #[func]
-    fn discover_peers()  {
+    fn discover_peers() -> GString {
+        let (tx, rx) = mpsc::channel();
         spawn(async move {
             let peers = multicast_service::get_peers().await;
-            godot_print!("Discovered peer: {}", peers);
+            let _ = tx.send(peers);
         });
+        let peers = rx.recv().unwrap_or_default();
+        peers.to_godot()
     }
 }
