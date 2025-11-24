@@ -65,4 +65,10 @@ impl RustNode {
     fn stop_discovery_service(&self) {
         spawn(async move { multicast_service::stop_service().await })
     }
+
+    #[func]
+    fn get_local_ip(&self) -> GString {
+        let local_ip = multicast_service::get_local_ipv4_in_string();
+        local_ip.to_godot()
+    }
 }

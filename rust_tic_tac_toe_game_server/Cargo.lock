@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "rust_udp_multicast_test"
 version = "0.1.0"
-source = "git+https://github.com/htoopyaelinn56/rust_udp_multicast_test#3e06c48302db75041efff951f5c3747acfa289ac"
+source = "git+https://github.com/htoopyaelinn56/rust_udp_multicast_test#fa7d162e488fe7fae08f890ea7e16fd317b71eed"
 dependencies = [
  "anyhow",
  "futures",
