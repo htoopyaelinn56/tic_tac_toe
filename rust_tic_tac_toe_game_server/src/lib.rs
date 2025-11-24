@@ -73,4 +73,11 @@ impl RustNode {
         let local_ip = multicast_service::get_local_ipv4_in_string();
         local_ip.to_godot()
     }
+
+    #[func]
+    fn start_tic_tac_toe_server(&self) {
+        spawn(async move {
+            server::start_server().await;
+        })
+    }
 }
