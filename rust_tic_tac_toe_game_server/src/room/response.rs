@@ -22,7 +22,7 @@ pub struct RoomStateResponse {
     pub num_connections: usize,
     pub message: String,
     pub success: bool,
-    pub my_mark: PlayerMark,
+    pub my_mark: String,
 }
 
 impl RoomStateResponse {

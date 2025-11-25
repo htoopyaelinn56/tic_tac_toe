@@ -113,7 +113,7 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
             num_connections: current_count,
             message: "Room is full".to_string(),
             success: false,
-            my_mark: PlayerMark::X, // dummy
+            my_mark: PlayerMark::X.to_string(), // dummy
         };
 
         let payload = RoomResponse {
@@ -151,7 +151,7 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
                 num_connections: snapshot.len(),
                 message: "Someone joined the room".to_string(),
                 success: true,
-                my_mark: *mark,
+                my_mark: (*mark.to_string()).to_owned(),
             };
 
             let payload = RoomResponse {
@@ -253,7 +253,7 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
                 num_connections: senders.len(),
                 message: format!("Player {} left the room", mark.to_string()),
                 success: true,
-                my_mark: *mark,
+                my_mark: (*mark.to_string()).to_owned(),
             };
             let payload = RoomResponse {
                 response_type: ResponseType::RoomState,
