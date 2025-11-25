@@ -736,6 +736,7 @@ dependencies = [
  "godot",
  "rust_udp_multicast_test",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

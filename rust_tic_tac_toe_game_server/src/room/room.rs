@@ -5,6 +5,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use crate::server::{Room, SharedState};
+use crate::room::RoomStateResponse;
 
 pub async fn join_room(
     Path(room_id): Path<String>,
@@ -90,7 +91,29 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
         id
     };
 
-    // Broadcast a join message to everyone in the room.
+    // Build RoomStateResponse for join notification
+    let join_payload = {
+        // Compute number of connections under the lock to get accurate count
+        let num_connections = {
+            let app_state = state.lock().await;
+            app_state
+                .rooms
+                .get(&room_id)
+                .map(|r| r.connections.len())
+                .unwrap_or(0)
+        };
+
+        RoomStateResponse {
+            room_id: room_id.clone(),
+            num_connections,
+            message: "Someone joined the room".to_string(),
+        }
+    };
+
+    // Serialize once
+    let join_json = serde_json::to_string(&join_payload).unwrap_or_else(|_| "{}".to_string());
+
+    // Broadcast the join JSON to everyone in the room and collect dead connections
     {
         let mut dead_connections = Vec::new();
         let mut senders = Vec::new();
@@ -105,16 +128,13 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
         }
 
         for (cid, tx_conn) in &senders {
-            if tx_conn
-                .send("Someone joined the room".to_string())
-                .is_err()
-            {
+            if tx_conn.send(join_json.clone()).is_err() {
                 dead_connections.push(*cid);
             }
         }
 
         if !dead_connections.is_empty() {
-            // Use centralized helper (no announce, no exclude)
+            // Use centralized helper (no announce, no exclude) to remove dead connections
             cleanup_dead_connections(state.clone(), &room_id, dead_connections, None, None).await;
         }
     }
@@ -180,13 +200,53 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
 
     // On disconnect, announce to the remaining connections and then remove this connection from the room
     // Announce "Someone left the room" to everyone except the leaving connection.
-    cleanup_dead_connections(
-        state.clone(),
-        &room_id,
-        Vec::new(),
-        Some("Someone left the room".to_string()),
-        Some(vec![connection_id]),
-    ).await;
+    // Build leave payload with accurate remaining count
+    let leave_payload = {
+        // Compute remaining connections count after this one leaves
+        let num_remaining = {
+            let app_state = state.lock().await;
+            app_state
+                .rooms
+                .get(&room_id)
+                .map(|r| r.connections.len().saturating_sub(1))
+                .unwrap_or(0)
+        };
+
+        RoomStateResponse {
+            room_id: room_id.clone(),
+            num_connections: num_remaining,
+            message: "Someone left the room".to_string(),
+        }
+    };
+
+    let leave_json = serde_json::to_string(&leave_payload).unwrap_or_else(|_| "{}".to_string());
+
+    // Send leave announcement to others (exclude leaving conn)
+    {
+        let mut dead_connections = Vec::new();
+        let mut senders = Vec::new();
+
+        {
+            let app_state = state.lock().await;
+            if let Some(room) = app_state.rooms.get(&room_id) {
+                for (&cid, tx_conn) in &room.connections {
+                    if cid != connection_id {
+                        senders.push((cid, tx_conn.clone()));
+                    }
+                }
+            }
+        }
+
+        for (cid, tx_conn) in &senders {
+            if tx_conn.send(leave_json.clone()).is_err() {
+                dead_connections.push(*cid);
+            }
+        }
+
+        if !dead_connections.is_empty() {
+            cleanup_dead_connections(state.clone(), &room_id, dead_connections, None, None).await;
+        }
+    }
 
     let mut app_state = state.lock().await;
     if let Some(room) = app_state.rooms.get_mut(&room_id) {
