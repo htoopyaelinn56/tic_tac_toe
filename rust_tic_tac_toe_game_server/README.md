@@ -26,10 +26,10 @@ ws.onclose = () => console.log('Closed');
 ---
 ## 2. Outgoing Responses From Server
 All messages sent by the server are JSON objects wrapped in a common envelope:
-```json
+```js
 {
-  "response_type": "room_state" | "game_state" | "error",
-  "response": <object>
+  "response_type": "room_state or game_state or error",
+  "response": "object"
 }
 ```
 ### 2.1 `room_state`
@@ -42,10 +42,10 @@ Payload shape:
 ```json
 {
   "room_id": "string",
-  "num_connections": 1,                // number of active sockets in the room at send time
-  "message": "string",                // informational message
-  "success": true,                     // false only for failed join (room full)
-  "my_mark": "x" | "o"                // mark assigned to the receiving connection
+  "num_connections": 1,               
+  "message": "string",                
+  "success": true,                   
+  "my_mark": "x or o"                
 }
 ```
 Example successful join broadcast for player with mark `x`:
@@ -72,11 +72,11 @@ Payload shape:
 ```json
 {
   "room_id": "string",
-  "board": [[null,"x",null],["o",null,null],[null,null,null]],  // 3x3 matrix, elements null | "x" | "o"
-  "current_turn": "x" | "o" | null,  // null if game not started or already finished
-  "winner": "x" | "o" | null,        // null if no winner yet or draw
-  "started": true,                     // game started flag
-  "moves_count": 3                     // number of moves performed so far
+  "board": [[null,"x",null],["o",null,null],[null,null,null]],  
+  "current_turn": "x or o or null",  
+  "winner": "x or o or null",       
+  "started": true,                     
+  "moves_count": 3                    
 }
 ```
 Notes:
@@ -105,8 +105,8 @@ Payload shape:
 ```json
 {
   "room_id": "string",
-  "code": "string",      // machine-readable error code
-  "message": "string"    // same string as code currently
+  "code": "string",     
+  "message": "string"  
 }
 ```
 Example:
@@ -141,8 +141,8 @@ Clients send plain text WebSocket messages containing JSON request payloads.
 Request schema:
 ```json
 {
-  "action": "start_game" | "make_move",
-  "move_payload": { "x": 0, "y": 2 } // required only for make_move
+  "action": "start_game or make_move",
+  "move_payload": { "x": 0, "y": 2 } 
 }
 ```
 ### 3.1 Start Game Manually
