@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use crate::server::{Room, SharedState};
-use crate::room::RoomStateResponse;
+use crate::room::{RoomStateResponse, PlayerMark};
 
 pub async fn join_room(
     Path(room_id): Path<String>,
@@ -32,12 +32,12 @@ async fn cleanup_dead_connections(
     let mut to_remove: Vec<crate::server::ConnectionId> = dead_connections.into_iter().collect();
 
     // Snapshot current senders for this room under the lock, then release the lock
-    let mut senders: Vec<(crate::server::ConnectionId, mpsc::UnboundedSender<String>)> = Vec::new();
+    let mut senders: Vec<(crate::server::ConnectionId, mpsc::UnboundedSender<String>, PlayerMark)> = Vec::new();
     {
         let app_state = state.lock().await;
         if let Some(room) = app_state.rooms.get(room_id) {
-            for (&cid, tx) in &room.connections {
-                senders.push((cid, tx.clone()));
+            for (&cid, (tx, mark)) in &room.connections {
+                senders.push((cid, tx.clone(), *mark));
             }
         }
     }
@@ -45,12 +45,12 @@ async fn cleanup_dead_connections(
     // Apply exclusion if provided (e.g., don't send the leave announce to the leaving connection)
     if let Some(exclude_ids) = exclude {
         let exclude_set: HashSet<_> = exclude_ids.into_iter().collect();
-        senders.retain(|(cid, _)| !exclude_set.contains(cid));
+        senders.retain(|(cid, _, _)| !exclude_set.contains(cid));
     }
 
     // If an announcement is requested, send it to the snapshot of senders (after exclusion)
     if let Some(msg) = announce {
-        for (cid, tx) in &senders {
+        for (cid, tx, _mark) in &senders {
             if tx.send(msg.clone()).is_err() {
                 to_remove.push(*cid);
             }
@@ -75,9 +75,9 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
-    // Register this connection in the shared room state and get its connection id.
+    // Register this connection in the shared room state and get its connection id and assigned mark.
     // Change: perform an atomic check+insert under the same lock so we never exceed 2 connections.
-    let connection_opt_and_count = {
+    let connection_opt_and_count_and_mark = {
         let mut app_state = state.lock().await;
         // First, read the current count without holding a mutable reference to a room entry.
         let current_count = app_state
@@ -87,25 +87,33 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
             .unwrap_or(0);
 
         if current_count >= 2 {
-            // Room already full: return (None, current_count)
-            (None, current_count)
+            // Room already full: return (None, current_count, dummy)
+            (None, current_count, PlayerMark::X)
         } else {
-            // Reserve an id, then insert into the room (this ordering avoids overlapping borrows).
+            // Reserve an id, determine mark, then insert into the room.
             let id = app_state.next_connection_id;
             app_state.next_connection_id = app_state.next_connection_id.wrapping_add(1);
+
+            let assigned_mark = if current_count == 0 {
+                PlayerMark::X
+            } else {
+                PlayerMark::O
+            };
+
             let room = app_state.rooms.entry(room_id.clone()).or_insert_with(Room::new);
-            room.connections.insert(id, tx.clone());
-            (Some(id), current_count + 1)
+            room.connections.insert(id, (tx.clone(), assigned_mark));
+            (Some(id), current_count + 1, assigned_mark)
         }
     };
 
     // If insertion was rejected because the room is full, notify the joining socket and close it.
-    if let (None, current_count) = connection_opt_and_count {
+    if let (None, current_count, _mark) = connection_opt_and_count_and_mark {
         let payload = RoomStateResponse {
             room_id: room_id.clone(),
             num_connections: current_count,
             message: "Room is full".to_string(),
             success: false,
+            my_mark: PlayerMark::X, // dummy
         };
 
         let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
@@ -115,48 +123,35 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
         return;
     }
 
-    // Unwrap the assigned connection id (we know it's Some because we returned earlier if None)
-    let connection_id = connection_opt_and_count.0.unwrap();
+    // Unwrap the assigned connection id and mark (we know it's Some because we returned earlier if None)
+    let connection_id = connection_opt_and_count_and_mark.0.unwrap();
+    let my_mark = connection_opt_and_count_and_mark.2;
 
-    // Build RoomStateResponse for join notification
-    let join_payload = {
-        // Compute number of connections under the lock to get accurate count
-        let num_connections = {
-            let app_state = state.lock().await;
-            app_state
-                .rooms
-                .get(&room_id)
-                .map(|r| r.connections.len())
-                .unwrap_or(0)
-        };
-
-        RoomStateResponse {
-            room_id: room_id.clone(),
-            num_connections,
-            message: "Someone joined the room".to_string(),
-            success: true,
-        }
-    };
-
-    // Serialize once
-    let join_json = serde_json::to_string(&join_payload).unwrap_or_else(|_| "{}".to_string());
-
-    // Broadcast the join JSON to everyone in the room and collect dead connections
+    // Build per-recipient RoomStateResponse for join notification and broadcast to everyone in the room
     {
         let mut dead_connections = Vec::new();
-        let mut senders = Vec::new();
+        let mut snapshot: Vec<(crate::server::ConnectionId, mpsc::UnboundedSender<String>, PlayerMark)> = Vec::new();
 
         {
             let app_state = state.lock().await;
             if let Some(room) = app_state.rooms.get(&room_id) {
-                for (&cid, tx_conn) in &room.connections {
-                    senders.push((cid, tx_conn.clone()));
+                for (&cid, (tx_conn, mark)) in &room.connections {
+                    snapshot.push((cid, tx_conn.clone(), *mark));
                 }
             }
         }
 
-        for (cid, tx_conn) in &senders {
-            if tx_conn.send(join_json.clone()).is_err() {
+        for (cid, tx_conn, mark) in &snapshot {
+            let payload = RoomStateResponse {
+                room_id: room_id.clone(),
+                num_connections: snapshot.len(),
+                message: "Someone joined the room".to_string(),
+                success: true,
+                my_mark: *mark,
+            };
+
+            let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+            if tx_conn.send(json).is_err() {
                 dead_connections.push(*cid);
             }
         }
@@ -198,7 +193,7 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
                         {
                             let app_state = state_for_recv.lock().await;
                             if let Some(room) = app_state.rooms.get(&room_id_for_recv) {
-                                for (&cid, tx_conn) in &room.connections {
+                                for (&cid, (tx_conn, _mark)) in &room.connections {
                                     senders.push((cid, tx_conn.clone()));
                                 }
                             }
@@ -245,6 +240,7 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
             num_connections: num_remaining,
             message: "Someone left the room".to_string(),
             success: true,
+            my_mark: PlayerMark::X,
         }
     };
 
@@ -258,16 +254,26 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
         {
             let app_state = state.lock().await;
             if let Some(room) = app_state.rooms.get(&room_id) {
-                for (&cid, tx_conn) in &room.connections {
+                for (&cid, (tx_conn, mark)) in &room.connections {
                     if cid != connection_id {
-                        senders.push((cid, tx_conn.clone()));
+                        senders.push((cid, tx_conn.clone(), *mark));
                     }
                 }
             }
         }
 
-        for (cid, tx_conn) in &senders {
-            if tx_conn.send(leave_json.clone()).is_err() {
+        for (cid, tx_conn, mark) in &senders {
+            // Build a per-recipient leave payload including their own mark
+            let payload = RoomStateResponse {
+                room_id: room_id.clone(),
+                num_connections: senders.len(),
+                message: "Someone left the room".to_string(),
+                success: true,
+                my_mark: *mark,
+            };
+
+            let json = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+            if tx_conn.send(json).is_err() {
                 dead_connections.push(*cid);
             }
         }

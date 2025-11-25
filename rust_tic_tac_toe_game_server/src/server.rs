@@ -10,8 +10,8 @@ use crate::room;
 pub(crate) type ConnectionId = u64;
 
 pub struct Room {
-    // Map of connection id -> sender channel for that connection
-    pub connections: HashMap<ConnectionId, mpsc::UnboundedSender<String>>,
+    // Map of connection id -> (sender channel for that connection, assigned PlayerMark)
+    pub connections: HashMap<ConnectionId, (mpsc::UnboundedSender<String>, crate::room::PlayerMark)>,
 }
 
 impl Room {
