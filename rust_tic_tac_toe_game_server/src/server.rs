@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Router};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -56,6 +56,62 @@ pub async fn join_room(
     ws.on_upgrade(move |socket| handle_join_room(room_id, socket, state))
 }
 
+// New helper: centralize dead-connection cleanup to avoid duplication and optionally announce a message
+async fn cleanup_dead_connections(
+    state: SharedState,
+    room_id: &str,
+    dead_connections: Vec<ConnectionId>,
+    announce: Option<String>,
+    exclude: Option<Vec<ConnectionId>>,
+) {
+    // If there's nothing to remove and nothing to announce, nothing to do.
+    if dead_connections.is_empty() && announce.is_none() {
+        return;
+    }
+
+    // Prepare set of ids to remove (start with provided dead_connections)
+    let mut to_remove: Vec<ConnectionId> = dead_connections.into_iter().collect();
+
+    // Snapshot current senders for this room under the lock, then release the lock
+    let mut senders: Vec<(ConnectionId, mpsc::UnboundedSender<String>)> = Vec::new();
+    {
+        let app_state = state.lock().await;
+        if let Some(room) = app_state.rooms.get(room_id) {
+            for (&cid, tx) in &room.connections {
+                senders.push((cid, tx.clone()));
+            }
+        }
+    }
+
+    // Apply exclusion if provided (e.g., don't send the leave announce to the leaving connection)
+    if let Some(exclude_ids) = exclude {
+        let exclude_set: HashSet<_> = exclude_ids.into_iter().collect();
+        senders.retain(|(cid, _)| !exclude_set.contains(cid));
+    }
+
+    // If an announcement is requested, send it to the snapshot of senders (after exclusion)
+    if let Some(msg) = announce {
+        for (cid, tx) in &senders {
+            if tx.send(msg.clone()).is_err() {
+                to_remove.push(*cid);
+            }
+        }
+    }
+
+    // Remove any connections discovered dead (either initially provided or discovered while announcing)
+    if !to_remove.is_empty() {
+        let mut app_state = state.lock().await;
+        if let Some(room) = app_state.rooms.get_mut(room_id) {
+            for cid in to_remove {
+                room.connections.remove(&cid);
+            }
+            if room.connections.is_empty() {
+                app_state.rooms.remove(room_id);
+            }
+        }
+    }
+}
+
 async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -100,12 +156,8 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
         }
 
         if !dead_connections.is_empty() {
-            let mut app_state = state.lock().await;
-            if let Some(room) = app_state.rooms.get_mut(&room_id) {
-                for cid in dead_connections {
-                    room.connections.remove(&cid);
-                }
-            }
+            // Use centralized helper (no announce, no exclude)
+            cleanup_dead_connections(state.clone(), &room_id, dead_connections, None, None).await;
         }
     }
 
@@ -153,12 +205,8 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
                         }
 
                         if !dead_connections.is_empty() {
-                            let mut app_state = state_for_recv.lock().await;
-                            if let Some(room) = app_state.rooms.get_mut(&room_id_for_recv) {
-                                for cid in dead_connections {
-                                    room.connections.remove(&cid);
-                                }
-                            }
+                            // Use centralized helper (no announce, no exclude)
+                            cleanup_dead_connections(state_for_recv.clone(), &room_id_for_recv, dead_connections, None, None).await;
                         }
                     }
                 }
@@ -172,7 +220,16 @@ async fn handle_join_room(room_id: String, socket: WebSocket, state: SharedState
         _ = recv_task => {},
     }
 
-    // On disconnect, remove this connection from the room
+    // On disconnect, announce to the remaining connections and then remove this connection from the room
+    // Announce "Someone left the room" to everyone except the leaving connection.
+    cleanup_dead_connections(
+        state.clone(),
+        &room_id,
+        Vec::new(),
+        Some("Someone left the room".to_string()),
+        Some(vec![connection_id]),
+    ).await;
+
     let mut app_state = state.lock().await;
     if let Some(room) = app_state.rooms.get_mut(&room_id) {
         room.connections.remove(&connection_id);
